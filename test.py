@@ -10,17 +10,24 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from dotenv import load_dotenv 
 
+from sqlalchemy import select
+from sqlalchemy.exc import SQLAlchemyError
+
+from database import SessionLocal, UserData, engine  # Импортируем необходимые элементы из database.py
 
 # Инициализация бота и диспетчера с хранилищем состояний
 load_dotenv()
-bot = Bot(os.getenv('BOT_TOKEN'))
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+DATABASE_URL = os.getenv('DATABASE_URL')  # Убедитесь, что DATABASE_URL установлен в .env
+
+bot = Bot(BOT_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # Список проф проб (можно изменить на любые другие)
 prof_prob_list = ["Программа 1", "Программа 2", "Программа 3"]
 
-# Состояния для FSM
+# Состояние
 class Form(StatesGroup):
     consent = State()        # Согласие на обработку персональных данных
     fio = State()            # Ввод ФИО
@@ -29,6 +36,7 @@ class Form(StatesGroup):
     prof_prob = State()      # Выбор проф пробы
     rating = State()         # Оценка проф пробы
     review = State()         # Отзыв (необязательно)
+    final_choice = State()   # Выбор "Отправить" или "Изменить"
 
 # Функция для создания клавиатуры из списка кнопок
 def create_keyboard(buttons):
@@ -75,17 +83,20 @@ async def handle_phone(message: types.Message, state: FSMContext):
     if not phone:
         await message.answer("Номер телефона не может быть пустым. Пожалуйста, введите ваш номер телефона:")
         return
-    # Дополнительно можно добавить проверку формата телефона
     await state.update_data(phone=phone)
-    await message.answer("Введите ваш класс обучения:", reply_markup=ReplyKeyboardRemove())
+    
+    # Создаём клавиатуру с выбором класса (8-11 классы) - Горизонтальная клавиатура
+    class_buttons = [[KeyboardButton(text=str(i)) for i in range(8, 12)]]
+    keyboard = create_keyboard(class_buttons)
+    await message.answer("Выберите ваш класс обучения:", reply_markup=keyboard)
     await state.set_state(Form.school_class)
 
 # Ввод класса обучения и выбор проф пробы
 @dp.message(Form.school_class)
 async def handle_class(message: types.Message, state: FSMContext):
     school_class = message.text.strip()
-    if not school_class:
-        await message.answer("Класс обучения не может быть пустым. Пожалуйста, введите ваш класс обучения:")
+    if school_class not in ["8", "9", "10", "11"]:
+        await message.answer("Пожалуйста, выберите ваш класс обучения.")
         return
     await state.update_data(school_class=school_class)
 
@@ -104,13 +115,10 @@ async def handle_prof_prob(message: types.Message, state: FSMContext):
         return
     await state.update_data(prof_prob=selected_prob)
 
-    # Удаляем клавиатуру после выбора
-    await message.answer("Вы выбрали: " + selected_prob, reply_markup=ReplyKeyboardRemove())
-
-    # Создаём клавиатуру с оценками от 1 до 5
-    rating_buttons = [[KeyboardButton(text=str(i))] for i in range(1, 6)]
+    # Создаём горизонтальную клавиатуру с оценками от 1 до 5
+    rating_buttons = [[KeyboardButton(text=str(i)) for i in range(1, 6)]]
     keyboard = create_keyboard(rating_buttons)
-    await message.answer("Оцените выбранную проф пробу от 1 до 5:", reply_markup=keyboard)
+    await message.answer("Оцените выбранную профпробу по шкале от 1 до 5, где 1 — очень плохо, а 5 — отлично:", reply_markup=keyboard)
     await state.set_state(Form.rating)
 
 # Оценка проф пробы
@@ -120,30 +128,27 @@ async def handle_rating(message: types.Message, state: FSMContext):
     if rating not in [str(i) for i in range(1, 6)]:
         await message.answer("Пожалуйста, выберите оценку от 1 до 5.")
         return
-    await state.update_data(rating=rating)
+    await state.update_data(rating=int(rating))
 
     # Клавиатура для отзыва с кнопкой пропустить
     buttons = [
-        [KeyboardButton(text="Скипнуть отзыв")]
+        [KeyboardButton(text="Пропустить →")]
     ]
     keyboard = create_keyboard(buttons)
     await message.answer("Оставьте отзыв о проф пробе (необязательно):", reply_markup=keyboard)
     await state.set_state(Form.review)
 
-# Отзыв или скип
+# Показываем собранные данные и предлагаем кнопки "Отправить" и "Изменить"
 @dp.message(Form.review)
 async def handle_review(message: types.Message, state: FSMContext):
-    if message.text.strip() == "Скипнуть отзыв":
+    if message.text.strip() == "Пропустить →":
         review = "Отзыв не предоставлен"
     else:
         review = message.text.strip()
         if not review:
-            await message.answer("Отзыв не может быть пустым. Пожалуйста, оставьте отзыв или нажмите 'Скипнуть отзыв':")
+            await message.answer("Отзыв не может быть пустым. Пожалуйста, оставьте отзыв или нажмите 'Пропустить →':")
             return
     await state.update_data(review=review)
-
-    # Удаляем клавиатуру после отзыва
-    await message.answer("Спасибо за ваш отзыв!", reply_markup=ReplyKeyboardRemove())
 
     # Собираем все данные
     user_data = await state.get_data()
@@ -156,8 +161,66 @@ async def handle_review(message: types.Message, state: FSMContext):
         f"Оценка: {user_data.get('rating')}\n"
         f"Отзыв: {user_data.get('review')}"
     )
-    await message.answer(response)
-    await state.clear()
+
+    # Добавляем кнопки "Отправить" и "Изменить"
+    buttons = [
+        [KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]
+    ]
+    keyboard = create_keyboard(buttons)
+    await message.answer(response, reply_markup=keyboard)
+    
+    # Устанавливаем новое состояние для выбора действия
+    await state.set_state(Form.final_choice)
+
+# Обработка финального выбора
+@dp.message(Form.final_choice)
+async def handle_final_choice(message: types.Message, state: FSMContext):
+    if message.text == "Отправить":
+        user_data = await state.get_data()
+        telegram_id = message.from_user.id
+        async with SessionLocal() as session:
+            try:
+                # Проверяем, существует ли уже запись для этого пользователя
+                stmt = select(UserData).where(UserData.telegram_id == telegram_id)
+                result = await session.execute(stmt)
+                existing_user = result.scalars().first()
+
+                if existing_user:
+                    # Если запись существует, обновляем её
+                    existing_user.fio = user_data.get('fio')
+                    existing_user.phone = user_data.get('phone')
+                    existing_user.school_class = user_data.get('school_class')
+                    existing_user.prof_prob = user_data.get('prof_prob')
+                    existing_user.rating = user_data.get('rating')
+                    existing_user.review = user_data.get('review')
+                else:
+                    # Если записи нет, создаём новую
+                    new_user = UserData(
+                        telegram_id=telegram_id,
+                        fio=user_data.get('fio'),
+                        phone=user_data.get('phone'),
+                        school_class=user_data.get('school_class'),
+                        prof_prob=user_data.get('prof_prob'),
+                        rating=user_data.get('rating'),
+                        review=user_data.get('review')
+                    )
+                    session.add(new_user)
+                
+                await session.commit()
+                await message.answer("Ваши данные успешно сохранены!", reply_markup=ReplyKeyboardRemove())
+                await state.clear()
+            except SQLAlchemyError as e:
+                await message.answer("Произошла ошибка при сохранении данных. Пожалуйста, попробуйте позже.", reply_markup=ReplyKeyboardRemove())
+                logging.error(f"Database error: {e}")
+                await state.clear()
+    elif message.text == "Изменить":
+        # Позволяем пользователю начать заново
+        await message.answer("Пожалуйста, введите ваше ФИО:", reply_markup=ReplyKeyboardRemove())
+        await state.set_state(Form.fio)
+    else:
+        await message.answer("Пожалуйста, выберите одну из предложенных опций: 'Отправить' или 'Изменить'.", reply_markup=create_keyboard([
+            [KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]
+        ]))
 
 # Обработка любых других сообщений
 @dp.message()
