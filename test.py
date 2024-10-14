@@ -1,6 +1,7 @@
 import os
 import asyncio
 import logging
+import gspread
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
@@ -8,8 +9,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from dotenv import load_dotenv
-import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from openpyxl import Workbook
+from aiogram.types import FSInputFile
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -25,15 +27,12 @@ def get_sheets_client():
              "https://www.googleapis.com/auth/spreadsheets",
              "https://www.googleapis.com/auth/drive.file", 
              "https://www.googleapis.com/auth/drive"]
-
     creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
-    client = gspread.authorize(creds)
-    return client
+    return gspread.authorize(creds)
 
 def add_user_to_google_sheets(user_data):
     client = get_sheets_client()
     sheet = client.open_by_url(os.getenv('SHEETS_URL')).sheet1
-    # Добавляем данные в Google Sheets
     sheet.append_row([
         user_data.get('fio'), 
         user_data.get('phone'), 
@@ -68,12 +67,44 @@ def create_keyboard(buttons):
         resize_keyboard=True
     )
 
+# Функция для создания Excel файла из Google Sheets
+def generate_excel_from_sheets():
+    client = get_sheets_client()
+    sheet = client.open_by_url(os.getenv('SHEETS_URL')).sheet1
+    data = sheet.get_all_values()
+    
+    workbook = Workbook()
+    excel_sheet = workbook.active
+
+    for row in data:
+        excel_sheet.append(row)
+    
+    file_path = "data.xlsx"
+    workbook.save(file_path)
+    return file_path
+
+# Обработчик команды /start
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, state: FSMContext):
     buttons = [[KeyboardButton(text="Согласен")]]
+    if message.from_user.id == 987863133:
+        buttons.append([KeyboardButton(text="Скачать Excel файл")])
     keyboard = create_keyboard(buttons)
     await message.answer("Вы согласны на обработку персональных данных?", reply_markup=keyboard)
     await state.set_state(Form.consent)
+
+@dp.message(lambda message: message.text == "Скачать Excel файл")
+async def handle_download_excel(message: types.Message):
+    if message.from_user.id == 987863133:
+        sent_message = await message.answer("Генерируется файл...")  # Сообщение о генерации файла
+        file_path = generate_excel_from_sheets()
+        
+        document = FSInputFile(file_path)
+        await message.answer_document(document)
+        await sent_message.delete()  # Удаляем сообщение о генерации файла
+    else:
+        await message.answer("У вас нет доступа к этой функции.")
+
 
 @dp.message(Form.consent)
 async def handle_consent(message: types.Message, state: FSMContext):
@@ -102,35 +133,27 @@ async def handle_phone(message: types.Message, state: FSMContext):
         return
     await state.update_data(phone=phone)
     class_buttons = [[KeyboardButton(text=str(i)) for i in range(8, 12)]]
-    keyboard = create_keyboard(class_buttons)
-    await message.answer("Выберите ваш класс обучения:", reply_markup=keyboard)
+    await message.answer("Выберите ваш класс обучения:", reply_markup=create_keyboard(class_buttons))
     await state.set_state(Form.school_class)
 
 @dp.message(Form.school_class)
 async def handle_class(message: types.Message, state: FSMContext):
-    school_class = message.text.strip()
-    await state.update_data(school_class=school_class)
+    await state.update_data(school_class=message.text.strip())
     buttons = [[KeyboardButton(text=prob)] for prob in prof_prob_list]
-    keyboard = create_keyboard(buttons)
-    await message.answer("Выберите проф пробу:", reply_markup=keyboard)
+    await message.answer("Выберите проф пробу:", reply_markup=create_keyboard(buttons))
     await state.set_state(Form.prof_prob)
 
 @dp.message(Form.prof_prob)
 async def handle_prof_prob(message: types.Message, state: FSMContext):
-    selected_prob = message.text.strip()
-    await state.update_data(prof_prob=selected_prob)
+    await state.update_data(prof_prob=message.text.strip())
     rating_buttons = [[KeyboardButton(text=str(i)) for i in range(1, 6)]]
-    keyboard = create_keyboard(rating_buttons)
-    await message.answer("Оцените профпробу от 1 до 5:", reply_markup=keyboard)
+    await message.answer("Оцените профпробу от 1 до 5:", reply_markup=create_keyboard(rating_buttons))
     await state.set_state(Form.rating)
 
 @dp.message(Form.rating)
 async def handle_rating(message: types.Message, state: FSMContext):
-    rating = message.text.strip()
-    await state.update_data(rating=rating)
-    buttons = [[KeyboardButton(text="Пропустить →")]]
-    keyboard = create_keyboard(buttons)
-    await message.answer("Оставьте отзыв о проф пробе (необязательно):", reply_markup=keyboard)
+    await state.update_data(rating=message.text.strip())
+    await message.answer("Оставьте отзыв о проф пробе (необязательно):", reply_markup=create_keyboard([[KeyboardButton(text="Пропустить →")]]))
     await state.set_state(Form.review)
 
 @dp.message(Form.review)
@@ -139,23 +162,23 @@ async def handle_review(message: types.Message, state: FSMContext):
     await state.update_data(review=review if review != "Пропустить →" else "Отзыв не предоставлен")
     user_data = await state.get_data()
     response = f"Ваши данные:\nФИО: {user_data.get('fio')}\nТелефон: {user_data.get('phone')}\nКласс: {user_data.get('school_class')}\nПроф проба: {user_data.get('prof_prob')}\nОценка: {user_data.get('rating')}\nОтзыв: {user_data.get('review')}"
-    buttons = [[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]
-    keyboard = create_keyboard(buttons)
-    await message.answer(response, reply_markup=keyboard)
+    await message.answer(response, reply_markup=create_keyboard([[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]))
     await state.set_state(Form.final_choice)
 
 @dp.message(Form.final_choice)
 async def handle_final_choice(message: types.Message, state: FSMContext):
     if message.text == "Отправить":
-        user_data = await state.get_data()
-        add_user_to_google_sheets(user_data)
-        await message.answer("Ваши данные сохранены в Google Sheets!", reply_markup=ReplyKeyboardRemove())
+        sent_message = await message.answer("Отправка...")  # Сообщение о начале отправки
+        add_user_to_google_sheets(await state.get_data())
+        await message.answer("Ваши данные отправлены!", reply_markup=ReplyKeyboardRemove())
+        await sent_message.delete()  # Удаляем сообщение о начале отправки
         await state.clear()
     elif message.text == "Изменить":
         await message.answer("Введите ваше ФИО:", reply_markup=ReplyKeyboardRemove())
         await state.set_state(Form.fio)
     else:
         await message.answer("Выберите 'Отправить' или 'Изменить'.", reply_markup=create_keyboard([[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]))
+
 
 async def main():
     logging.basicConfig(level=logging.INFO)
