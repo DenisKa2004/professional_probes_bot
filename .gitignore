@@ -162,3 +162,4 @@ cython_debug/
 .env
 
 credentials.json
+moderators.json

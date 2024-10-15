@@ -2,7 +2,8 @@ import os
 import asyncio
 import logging
 import gspread
-from aiogram import Bot, Dispatcher, types
+from aiogram import Bot, Dispatcher, Router, types
+from aiogram.types import Message
 from aiogram.filters import CommandStart
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -12,10 +13,11 @@ from dotenv import load_dotenv
 from oauth2client.service_account import ServiceAccountCredentials
 from openpyxl import Workbook
 from aiogram.types import FSInputFile
+from aiogram.filters import Command
 
 # Загрузка переменных окружения
 load_dotenv()
-
+router = Router()
 # Инициализация бота и хранилища состояний
 bot = Bot(os.getenv('BOT_TOKEN'))
 storage = MemoryStorage()
@@ -83,6 +85,26 @@ def generate_excel_from_sheets():
     workbook.save(file_path)
     return file_path
 
+
+moderators = []
+
+# Command handler to add a moderator
+@dp.message(Command(commands=["add_moderator"]))
+async def add_moderator(message: types.Message):
+    if message.from_user.id == 987863133:
+        try:
+            moderator_id = int(message.text.split()[1])  # Assume the command is /add_moderator <user_id>
+            if moderator_id not in moderators:
+                moderators.append(moderator_id)
+                await message.answer(f"Пользователь с ID {moderator_id} добавлен в качестве модератора.")
+            else:
+                await message.answer("Этот пользователь уже является модератором.")
+        except (IndexError, ValueError):
+            await message.answer("Пожалуйста, укажите корректный ID пользователя после команды.")
+    else:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+
+
 # Обработчик команды /start
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, state: FSMContext):
@@ -95,13 +117,13 @@ async def handle_start(message: types.Message, state: FSMContext):
 
 @dp.message(lambda message: message.text == "Скачать Excel файл")
 async def handle_download_excel(message: types.Message):
-    if message.from_user.id == 987863133:
-        sent_message = await message.answer("Генерируется файл...")  # Сообщение о генерации файла
+    if message.from_user.id == 987863133 or message.from_user.id in moderators:
+        sent_message = await message.answer("Генерируется файл...")  # Notification of file generation
         file_path = generate_excel_from_sheets()
         
         document = FSInputFile(file_path)
         await message.answer_document(document)
-        await sent_message.delete()  # Удаляем сообщение о генерации файла
+        await sent_message.delete()  # Delete the "Generating file..." message
     else:
         await message.answer("У вас нет доступа к этой функции.")
 
@@ -179,8 +201,13 @@ async def handle_final_choice(message: types.Message, state: FSMContext):
     else:
         await message.answer("Выберите 'Отправить' или 'Изменить'.", reply_markup=create_keyboard([[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]))
 
+@router.message(Command(commands=["myid"]))
+async def send_user_id(message: Message):
+    user_id = message.from_user.id
+    await message.answer(f"Ваш ID: {user_id}")
 
 async def main():
+    dp.include_router(router)
     logging.basicConfig(level=logging.INFO)
     await dp.start_polling(bot)
 
