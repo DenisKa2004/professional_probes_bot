@@ -14,6 +14,9 @@ from oauth2client.service_account import ServiceAccountCredentials
 from openpyxl import Workbook
 from aiogram.types import FSInputFile
 from aiogram.filters import Command
+import json
+
+MODERATORS_FILE = "moderators.json"
 
 # Загрузка переменных окружения
 load_dotenv()
@@ -35,6 +38,7 @@ def get_sheets_client():
 def add_user_to_google_sheets(user_data):
     client = get_sheets_client()
     sheet = client.open_by_url(os.getenv('SHEETS_URL')).sheet1
+    next_row = len(sheet.get_all_values()) + 1
     sheet.append_row([
         user_data.get('fio'), 
         user_data.get('phone'), 
@@ -42,7 +46,8 @@ def add_user_to_google_sheets(user_data):
         user_data.get('prof_prob'), 
         user_data.get('rating'), 
         user_data.get('review')
-    ])
+    ], table_range=f'A{next_row}')
+
 
 # Список проф проб
 prof_prob_list = ["Основы работы с нейросетями и их обучение", 
@@ -86,17 +91,19 @@ def generate_excel_from_sheets():
     return file_path
 
 
-moderators = []
-
-# Command handler to add a moderator
+# Обработчик команды для добавления модератора
 @dp.message(Command(commands=["add_moderator"]))
 async def add_moderator(message: types.Message):
-    if message.from_user.id == 987863133:
+    if message.from_user.id == os.getenv('ADMIN_ID'):
         try:
-            moderator_id = int(message.text.split()[1])  # Assume the command is /add_moderator <user_id>
+            moderator_id = int(message.text.split()[1])
             if moderator_id not in moderators:
                 moderators.append(moderator_id)
+                save_moderators(moderators)
                 await message.answer(f"Пользователь с ID {moderator_id} добавлен в качестве модератора.")
+                # Перезагружаем клавиатуру для нового модератора
+                if moderator_id == message.from_user.id:
+                    await handle_start(message)  # Перезагрузка клавиатуры для самого админа
             else:
                 await message.answer("Этот пользователь уже является модератором.")
         except (IndexError, ValueError):
@@ -104,28 +111,77 @@ async def add_moderator(message: types.Message):
     else:
         await message.answer("У вас нет прав для выполнения этой команды.")
 
+# Обработчик команды для удаления модератора
+@dp.message(Command(commands=["remove_moderator"]))
+async def remove_moderator(message: types.Message):
+    if message.from_user.id == os.getenv('ADMIN_ID'):
+        try:
+            moderator_id = int(message.text.split()[1])  # Предполагаем, что команда вида /remove_moderator <user_id>
+            if moderator_id in moderators:
+                moderators.remove(moderator_id)
+                save_moderators(moderators)  # Сохранение обновленного списка
+                await message.answer(f"Пользователь с ID {moderator_id} удалён из списка модераторов.")
+                # Обновляем интерфейс, если администратор удаляет сам себя как модератора
+                if moderator_id == message.from_user.id:
+                    await handle_start(message)
+            else:
+                await message.answer("Этот пользователь не является модератором.")
+        except (IndexError, ValueError):
+            await message.answer("Пожалуйста, укажите корректный ID пользователя после команды.")
+    else:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+
+# Функция для загрузки модераторов из JSON-файла
+def load_moderators():
+    try:
+        with open(MODERATORS_FILE, "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        return []
+    except json.JSONDecodeError:
+        return []
+
+# Функция для сохранения модераторов в JSON-файл
+def save_moderators(moderators):
+    with open(MODERATORS_FILE, "w") as file:
+        json.dump(moderators, file)
+
+# Инициализация списка модераторов при запуске бота
+moderators = load_moderators()
 
 # Обработчик команды /start
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, state: FSMContext):
-    buttons = [[KeyboardButton(text="Согласен")]]
-    if message.from_user.id == 987863133:
-        buttons.append([KeyboardButton(text="Скачать Excel файл")])
+    buttons = []
+    if message.from_user.id == os.getenv('ADMIN_ID') or message.from_user.id in moderators:
+        buttons.append([KeyboardButton(text="Сгенерировать Excel файл")])
+    if message.from_user.id == os.getenv('ADMIN_ID'):
+        buttons.append([KeyboardButton(text="Очистить Google таблицу")])
+    
+    # Добавляем кнопку "Согласен" для всех остальных пользователей
+    if message.from_user.id != os.getenv('ADMIN_ID') and message.from_user.id not in moderators:
+        buttons.append([KeyboardButton(text="Согласен")])
+    
     keyboard = create_keyboard(buttons)
-    await message.answer("Вы согласны на обработку персональных данных?", reply_markup=keyboard)
+    await message.answer("Согласие на обработку данных:", reply_markup=keyboard)
     await state.set_state(Form.consent)
 
-@dp.message(lambda message: message.text == "Скачать Excel файл")
+
+
+
+
+@dp.message(lambda message: message.text == "Сгенерировать Excel файл")
 async def handle_download_excel(message: types.Message):
-    if message.from_user.id == 987863133 or message.from_user.id in moderators:
-        sent_message = await message.answer("Генерируется файл...")  # Notification of file generation
+    if message.from_user.id == os.getenv('ADMIN_ID') or message.from_user.id in moderators:
+        sent_message = await message.answer("Генерируется файл...")
         file_path = generate_excel_from_sheets()
         
         document = FSInputFile(file_path)
         await message.answer_document(document)
-        await sent_message.delete()  # Delete the "Generating file..." message
+        await sent_message.delete()  # Удаляем сообщение о генерации файла
     else:
         await message.answer("У вас нет доступа к этой функции.")
+
 
 
 @dp.message(Form.consent)
@@ -201,10 +257,24 @@ async def handle_final_choice(message: types.Message, state: FSMContext):
     else:
         await message.answer("Выберите 'Отправить' или 'Изменить'.", reply_markup=create_keyboard([[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]))
 
+@dp.message(lambda message: message.text == "Очистить Google таблицу")
+async def clear_google_sheets(message: types.Message):
+    if message.from_user.id == os.getenv('ADMIN_ID'):
+        client = get_sheets_client()
+        sheet = client.open_by_url(os.getenv('SHEETS_URL')).sheet1
+        sheet.clear()
+        await message.answer("Google таблица очищена.")
+    else:
+        await message.answer("У вас нет доступа к этой функции.")
+
+
+# Обработчик команды /myid
 @router.message(Command(commands=["myid"]))
-async def send_user_id(message: Message):
+async def send_user_id(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     await message.answer(f"Ваш ID: {user_id}")
+
+
 
 async def main():
     dp.include_router(router)
