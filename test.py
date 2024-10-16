@@ -18,6 +18,8 @@ import json
 
 MODERATORS_FILE = "moderators.json"
 
+ADMIN_ID = int(os.getenv('ADMIN_ID'))
+
 # Загрузка переменных окружения
 load_dotenv()
 router = Router()
@@ -94,7 +96,7 @@ def generate_excel_from_sheets():
 # Обработчик команды для добавления модератора
 @dp.message(Command(commands=["add_moderator"]))
 async def add_moderator(message: types.Message):
-    if message.from_user.id == os.getenv('ADMIN_ID'):
+    if message.from_user.id == ADMIN_ID:
         try:
             moderator_id = int(message.text.split()[1])
             if moderator_id not in moderators:
@@ -114,7 +116,7 @@ async def add_moderator(message: types.Message):
 # Обработчик команды для удаления модератора
 @dp.message(Command(commands=["remove_moderator"]))
 async def remove_moderator(message: types.Message):
-    if message.from_user.id == os.getenv('ADMIN_ID'):
+    if message.from_user.id == ADMIN_ID:
         try:
             moderator_id = int(message.text.split()[1])  # Предполагаем, что команда вида /remove_moderator <user_id>
             if moderator_id in moderators:
@@ -153,13 +155,13 @@ moderators = load_moderators()
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, state: FSMContext):
     buttons = []
-    if message.from_user.id == os.getenv('ADMIN_ID') or message.from_user.id in moderators:
+    if message.from_user.id == ADMIN_ID or message.from_user.id in moderators:
         buttons.append([KeyboardButton(text="Сгенерировать Excel файл")])
-    if message.from_user.id == os.getenv('ADMIN_ID'):
+    if message.from_user.id == ADMIN_ID:
         buttons.append([KeyboardButton(text="Очистить Google таблицу")])
     
     # Добавляем кнопку "Согласен" для всех остальных пользователей
-    if message.from_user.id != os.getenv('ADMIN_ID') and message.from_user.id not in moderators:
+    if message.from_user.id != ADMIN_ID and message.from_user.id not in moderators:
         buttons.append([KeyboardButton(text="Согласен")])
     
     keyboard = create_keyboard(buttons)
@@ -172,7 +174,7 @@ async def handle_start(message: types.Message, state: FSMContext):
 
 @dp.message(lambda message: message.text == "Сгенерировать Excel файл")
 async def handle_download_excel(message: types.Message):
-    if message.from_user.id == os.getenv('ADMIN_ID') or message.from_user.id in moderators:
+    if message.from_user.id == ADMIN_ID or message.from_user.id in moderators:
         sent_message = await message.answer("Генерируется файл...")
         file_path = generate_excel_from_sheets()
         
@@ -259,7 +261,7 @@ async def handle_final_choice(message: types.Message, state: FSMContext):
 
 @dp.message(lambda message: message.text == "Очистить Google таблицу")
 async def clear_google_sheets(message: types.Message):
-    if message.from_user.id == os.getenv('ADMIN_ID'):
+    if message.from_user.id == ADMIN_ID:
         client = get_sheets_client()
         sheet = client.open_by_url(os.getenv('SHEETS_URL')).sheet1
         sheet.clear()
