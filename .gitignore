@@ -163,3 +163,4 @@ cython_debug/
 
 credentials.json
 moderators.json
+data.xlsx
