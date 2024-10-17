@@ -17,9 +17,9 @@ from aiogram.filters import Command
 import json
 
 MODERATORS_FILE = "moderators.json"
+CONFIG_FILE = "config.json"
 
-ADMIN_ID = int(os.getenv('ADMIN_ID'))
-
+ADMIN_ID = 0
 # Загрузка переменных окружения
 load_dotenv()
 router = Router()
@@ -28,6 +28,17 @@ bot = Bot(os.getenv('BOT_TOKEN'))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
+
+def load_admins():
+    try:
+        with open(CONFIG_FILE, "r") as file:
+            config = json.load(file)
+            return config.get("ADMINS", [])  # возвращаем список администраторов или пустой список
+    except FileNotFoundError:
+        logging.error("Config file not found. Ensure config.json is present.")
+        return []
+
+admins = load_admins()
 # Настройка доступа к Google Sheets
 def get_sheets_client():
     scope = ["https://spreadsheets.google.com/feeds", 
@@ -37,20 +48,28 @@ def get_sheets_client():
     creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
     return gspread.authorize(creds)
 
+# Обновленная функция для добавления пользователя в Google Sheets
 def add_user_to_google_sheets(user_data):
     client = get_sheets_client()
     sheet = client.open_by_url(os.getenv('SHEETS_URL')).sheet1
     next_row = len(sheet.get_all_values()) + 1
     sheet.append_row([
-        user_data.get('fio'), 
-        user_data.get('phone'), 
-        user_data.get('school_class'), 
-        user_data.get('prof_prob'), 
-        user_data.get('rating'), 
+        user_data.get('event'),   # Сохранение выбранного мероприятия
+        user_data.get('fio'),
+        user_data.get('phone'),
+        user_data.get('school_class'),
+        user_data.get('prof_prob'),
+        user_data.get('rating'),
         user_data.get('review')
     ], table_range=f'A{next_row}')
 
-
+events_list = [
+    "День открытых дверей",
+    "Профессиональные пробы",
+    "Билет в будущее",
+    "Профессиональное образование без границ",
+    "Фестиваль колледжей"
+]
 # Список проф проб
 prof_prob_list = ["Основы работы с нейросетями и их обучение", 
                   "Кабельная система локальной сети", 
@@ -61,6 +80,7 @@ prof_prob_list = ["Основы работы с нейросетями и их �
 # Определение состояний
 class Form(StatesGroup):
     consent = State()
+    event = State()
     fio = State()
     phone = State()
     school_class = State()
@@ -96,7 +116,7 @@ def generate_excel_from_sheets():
 # Обработчик команды для добавления модератора
 @dp.message(Command(commands=["add_moderator"]))
 async def add_moderator(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
+    if message.from_user.id in admins:
         try:
             moderator_id = int(message.text.split()[1])
             if moderator_id not in moderators:
@@ -116,7 +136,7 @@ async def add_moderator(message: types.Message):
 # Обработчик команды для удаления модератора
 @dp.message(Command(commands=["remove_moderator"]))
 async def remove_moderator(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
+    if message.from_user.id in admins:
         try:
             moderator_id = int(message.text.split()[1])  # Предполагаем, что команда вида /remove_moderator <user_id>
             if moderator_id in moderators:
@@ -155,18 +175,26 @@ moderators = load_moderators()
 @dp.message(CommandStart())
 async def handle_start(message: types.Message, state: FSMContext):
     buttons = []
-    if message.from_user.id == ADMIN_ID or message.from_user.id in moderators:
+    if message.from_user.id in admins or message.from_user.id in moderators:
         buttons.append([KeyboardButton(text="Сгенерировать Excel файл")])
-    if message.from_user.id == ADMIN_ID:
-        buttons.append([KeyboardButton(text="Очистить Google таблицу")])
+
+    if message.from_user.id in admins:
+        buttons.append([KeyboardButton(text="Очистить Excel таблицу")])
+        await message.answer("Добро пожаловать администратор")
     
     # Добавляем кнопку "Согласен" для всех остальных пользователей
-    if message.from_user.id != ADMIN_ID and message.from_user.id not in moderators:
+    if message.from_user.id not in admins and message.from_user.id not in moderators:
         buttons.append([KeyboardButton(text="Согласен")])
+        keyboard = create_keyboard(buttons)
+        await message.answer("Согласие на обработку данных:", reply_markup=keyboard)
+        await state.set_state(Form.consent)
     
-    keyboard = create_keyboard(buttons)
-    await message.answer("Согласие на обработку данных:", reply_markup=keyboard)
-    await state.set_state(Form.consent)
+    if buttons and (message.from_user.id in admins or message.from_user.id in moderators):  # Отправка кнопок, если они есть
+        keyboard = create_keyboard(buttons)
+        await message.answer("Выберите действие:", reply_markup=keyboard)
+    elif(message.from_user.id in admins or message.from_user.id in moderators):
+        await message.answer("У вас нет доступных действий.")
+
 
 
 
@@ -174,7 +202,7 @@ async def handle_start(message: types.Message, state: FSMContext):
 
 @dp.message(lambda message: message.text == "Сгенерировать Excel файл")
 async def handle_download_excel(message: types.Message):
-    if message.from_user.id == ADMIN_ID or message.from_user.id in moderators:
+    if message.from_user.id in admins or message.from_user.id in moderators:
         sent_message = await message.answer("Генерируется файл...")
         file_path = generate_excel_from_sheets()
         
@@ -189,11 +217,18 @@ async def handle_download_excel(message: types.Message):
 @dp.message(Form.consent)
 async def handle_consent(message: types.Message, state: FSMContext):
     if message.text == "Согласен":
-        await message.answer("Пожалуйста, введите ваше ФИО:", reply_markup=ReplyKeyboardRemove())
-        await state.set_state(Form.fio)
+        event_buttons = [[KeyboardButton(text=event)] for event in events_list]
+        await message.answer("Выберите мероприятие:", reply_markup=create_keyboard(event_buttons))
+        await state.set_state(Form.event)
     else:
         await message.answer("Для продолжения требуется согласие на обработку персональных данных.")
         await state.clear()
+
+@dp.message(Form.event)
+async def handle_event(message: types.Message, state: FSMContext):
+    await state.update_data(event=message.text.strip())
+    await message.answer("Пожалуйста, введите ваше ФИО:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(Form.fio)
 
 @dp.message(Form.fio)
 async def handle_fio(message: types.Message, state: FSMContext):
@@ -241,7 +276,7 @@ async def handle_review(message: types.Message, state: FSMContext):
     review = message.text.strip()
     await state.update_data(review=review if review != "Пропустить →" else "Отзыв не предоставлен")
     user_data = await state.get_data()
-    response = f"Ваши данные:\nФИО: {user_data.get('fio')}\nТелефон: {user_data.get('phone')}\nКласс: {user_data.get('school_class')}\nПроф проба: {user_data.get('prof_prob')}\nОценка: {user_data.get('rating')}\nОтзыв: {user_data.get('review')}"
+    response = f"Ваши данные:\nФИО: {user_data.get('fio')}\n Мероприятие: {user_data.get('event')}\n Телефон: {user_data.get('phone')}\nКласс: {user_data.get('school_class')}\nПроф проба: {user_data.get('prof_prob')}\nОценка: {user_data.get('rating')}\nОтзыв: {user_data.get('review')}"
     await message.answer(response, reply_markup=create_keyboard([[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]))
     await state.set_state(Form.final_choice)
 
@@ -259,13 +294,13 @@ async def handle_final_choice(message: types.Message, state: FSMContext):
     else:
         await message.answer("Выберите 'Отправить' или 'Изменить'.", reply_markup=create_keyboard([[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]))
 
-@dp.message(lambda message: message.text == "Очистить Google таблицу")
+@dp.message(lambda message: message.text == "Очистить Excel таблицу")
 async def clear_google_sheets(message: types.Message):
-    if message.from_user.id == ADMIN_ID:
+    if message.from_user.id in admins:
         client = get_sheets_client()
         sheet = client.open_by_url(os.getenv('SHEETS_URL')).sheet1
         sheet.clear()
-        await message.answer("Google таблица очищена.")
+        await message.answer("Excel таблица очищена.")
     else:
         await message.answer("У вас нет доступа к этой функции.")
 
