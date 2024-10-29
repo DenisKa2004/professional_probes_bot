@@ -226,7 +226,9 @@ async def handle_consent(message: types.Message, state: FSMContext):
 
 @dp.message(Form.event)
 async def handle_event(message: types.Message, state: FSMContext):
-    await state.update_data(event=message.text.strip())
+    selected_event = message.text.strip()
+    await state.update_data(event=selected_event)
+    
     await message.answer("Пожалуйста, введите ваше ФИО:", reply_markup=ReplyKeyboardRemove())
     await state.set_state(Form.fio)
 
@@ -254,9 +256,18 @@ async def handle_phone(message: types.Message, state: FSMContext):
 @dp.message(Form.school_class)
 async def handle_class(message: types.Message, state: FSMContext):
     await state.update_data(school_class=message.text.strip())
-    buttons = [[KeyboardButton(text=prob)] for prob in prof_prob_list]
-    await message.answer("Выберите проф пробу:", reply_markup=create_keyboard(buttons))
-    await state.set_state(Form.prof_prob)
+    user_data = await state.get_data()
+
+    # Если мероприятие "Фестиваль колледжей," пропускаем выбор профпробы и сразу переходим к оценке
+    if user_data.get('event') == "Фестиваль колледжей":
+        rating_buttons = [[KeyboardButton(text=str(i)) for i in range(1, 6)]]
+        await message.answer("Оцените мероприятие от 1 до 5:", reply_markup=create_keyboard(rating_buttons))
+        await state.set_state(Form.rating)
+    else:
+        # Иначе продолжаем с выбором профпробы
+        buttons = [[KeyboardButton(text=prob)] for prob in prof_prob_list]
+        await message.answer("Выберите проф пробу:", reply_markup=create_keyboard(buttons))
+        await state.set_state(Form.prof_prob)
 
 @dp.message(Form.prof_prob)
 async def handle_prof_prob(message: types.Message, state: FSMContext):
@@ -276,9 +287,34 @@ async def handle_review(message: types.Message, state: FSMContext):
     review = message.text.strip()
     await state.update_data(review=review if review != "Пропустить →" else "Отзыв не предоставлен")
     user_data = await state.get_data()
-    response = f"Ваши данные:\nФИО: {user_data.get('fio')}\n Мероприятие: {user_data.get('event')}\n Телефон: {user_data.get('phone')}\nКласс: {user_data.get('school_class')}\nПроф проба: {user_data.get('prof_prob')}\nОценка: {user_data.get('rating')}\nОтзыв: {user_data.get('review')}"
+    
+    # Формируем итоговое сообщение для "Фестиваля колледжей" без упоминания профпробы
+    if user_data.get('event') == "Фестиваль колледжей":
+        response = (
+            f"Ваши данные:\n"
+            f"ФИО: {user_data.get('fio')}\n"
+            f"Мероприятие: {user_data.get('event')}\n"
+            f"Телефон: {user_data.get('phone')}\n"
+            f"Класс: {user_data.get('school_class')}\n"
+            f"Оценка: {user_data.get('rating')}\n"
+            f"Отзыв: {user_data.get('review')}"
+        )
+    else:
+        # Итоговое сообщение для других мероприятий, включая профпробу
+        response = (
+            f"Ваши данные:\n"
+            f"ФИО: {user_data.get('fio')}\n"
+            f"Мероприятие: {user_data.get('event')}\n"
+            f"Телефон: {user_data.get('phone')}\n"
+            f"Класс: {user_data.get('school_class')}\n"
+            f"Проф проба: {user_data.get('prof_prob')}\n"
+            f"Оценка: {user_data.get('rating')}\n"
+            f"Отзыв: {user_data.get('review')}"
+        )
+    
     await message.answer(response, reply_markup=create_keyboard([[KeyboardButton(text="Отправить"), KeyboardButton(text="Изменить")]]))
     await state.set_state(Form.final_choice)
+
 
 @dp.message(Form.final_choice)
 async def handle_final_choice(message: types.Message, state: FSMContext):
